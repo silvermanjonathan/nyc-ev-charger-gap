@@ -1,0 +1,2 @@
+openai==3.42.1
+azure-identity==1.27.0
