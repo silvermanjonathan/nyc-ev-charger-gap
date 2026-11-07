@@ -1,3 +1,4 @@
 openai==3.42.1
 azure-identity==1.27.0
 pytest==9.2.0
+azure-ai-projects==2.10.0
