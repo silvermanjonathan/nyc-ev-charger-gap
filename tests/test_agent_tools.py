@@ -52,8 +52,11 @@ def test_result_survives_json():
     assert json.loads(json.dumps(result)) == result
 
 
-def test_classify_request_feeds_the_pipeline_the_right_input(monkeypatch):
-    # Stand-ins for classify.py's Azure and cache parts, so no model is called.
+def use_fake_classifier(monkeypatch):
+    """Swap classify.py's Azure and cache parts for stand-ins, so no model is called.
+
+    Returns a dict that records what classify_texts was given.
+    """
     seen = {}
 
     def fake_classify_texts(client, conn, prompt, texts, max_calls):
@@ -67,7 +70,11 @@ def test_classify_request_feeds_the_pipeline_the_right_input(monkeypatch):
     monkeypatch.setattr(agent_tools.classify, "make_client", lambda: None)
     monkeypatch.setattr(agent_tools.classify, "open_cache", lambda: sqlite3.connect(":memory:"))
     monkeypatch.setattr(agent_tools.classify, "classify_texts", fake_classify_texts)
+    return seen
 
+
+def test_classify_request_feeds_the_pipeline_the_right_input(monkeypatch):
+    seen = use_fake_classifier(monkeypatch)
     result = agent_tools.classify_request("We need EV chargers on our streets.", "")
     # The board's words go in the Explanation line, as in the pipeline.
     assert seen["texts"] == ["Request: \nExplanation: We need EV chargers on our streets."]
@@ -75,6 +82,16 @@ def test_classify_request_feeds_the_pipeline_the_right_input(monkeypatch):
     assert seen["max_calls"] == 1                                      # the spending brake
     assert result["label"] == "ev_charging"
     assert result["source"] and result["as_of"]
+
+
+def test_classify_request_drops_a_period_at_the_end_of_the_category(monkeypatch):
+    # Fix 23: Runs 15, 17 and 18 passed the category with the period that ended the user's sentence.
+    seen = use_fake_classifier(monkeypatch)
+    agent_tools.classify_request("We need EV chargers on our streets.", "Other capital budget request for DOT.")
+    # The category's period is gone; the period in the board's words stays.
+    assert seen["texts"] == [
+        "Request: Other capital budget request for DOT\nExplanation: We need EV chargers on our streets."
+    ]
 
 
 def test_every_tool_definition_has_a_function():

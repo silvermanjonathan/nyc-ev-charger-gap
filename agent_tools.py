@@ -158,8 +158,12 @@ def classify_request(explanation: str, request_category: str) -> dict:
     cache, and a brake of one model call (none if the text is already cached).
     """
     prompt = classify.load_prompt(CLASSIFIER_PROMPT)
+    # Fix 23: a user's sentence often ends the category with a period, and the agent sometimes
+    # keeps it. None of the 35 dev-set categories ends with one, so drop it: the classifier then
+    # gets the same input, and the same cache entry, as the pipeline.
+    category = request_category.strip().removesuffix(".")
     # The pipeline's input is "Request: <category>\nExplanation: <board's words>".
-    text = classify.model_input(request_category, explanation)
+    text = classify.model_input(category, explanation)
     conn = classify.open_cache()
     try:
         results, stats = classify.classify_texts(classify.make_client(), conn, prompt, [text], max_calls=1)
