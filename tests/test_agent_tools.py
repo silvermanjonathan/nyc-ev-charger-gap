@@ -3,6 +3,7 @@
 Run from the repo folder:  python -m pytest -q
 """
 import json
+import sqlite3
 
 import agent_tools
 
@@ -49,6 +50,31 @@ def test_result_survives_json():
     # ask_agent.py sends results to the agent as JSON text, so they must convert cleanly.
     result = agent_tools.describe_data()
     assert json.loads(json.dumps(result)) == result
+
+
+def test_classify_request_feeds_the_pipeline_the_right_input(monkeypatch):
+    # Stand-ins for classify.py's Azure and cache parts, so no model is called.
+    seen = {}
+
+    def fake_classify_texts(client, conn, prompt, texts, max_calls):
+        seen.update(prompt=prompt, texts=texts, max_calls=max_calls)
+        answer = {"label": "ev_charging", "parking_concern": "no", "reason": "asks for chargers",
+                  "from_cache": False, "error": ""}
+        stats = {"calls": 1, "cache_hits": 0, "input_tokens": 900, "cached_input_tokens": 0,
+                 "output_tokens": 40}
+        return {texts[0]: answer}, stats
+
+    monkeypatch.setattr(agent_tools.classify, "make_client", lambda: None)
+    monkeypatch.setattr(agent_tools.classify, "open_cache", lambda: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(agent_tools.classify, "classify_texts", fake_classify_texts)
+
+    result = agent_tools.classify_request("We need EV chargers on our streets.", "")
+    # The board's words go in the Explanation line, as in the pipeline.
+    assert seen["texts"] == ["Request: \nExplanation: We need EV chargers on our streets."]
+    assert seen["prompt"] == agent_tools.classify.load_prompt("v2")  # the frozen prompt
+    assert seen["max_calls"] == 1                                      # the spending brake
+    assert result["label"] == "ev_charging"
+    assert result["source"] and result["as_of"]
 
 
 def test_every_tool_definition_has_a_function():

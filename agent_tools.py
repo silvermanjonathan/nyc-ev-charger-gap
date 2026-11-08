@@ -5,11 +5,13 @@ Each tool has two halves:
 - a FunctionTool, which tells the agent the function's name, what it does,
   and its arguments. create_agent.py sends these to Foundry.
 
-Version 1 has one tool, describe_data. The other six tools in the agent spec
-get added here, one at a time, as their data is ready.
+Built so far: describe_data and classify_request. The other five tools in the
+agent spec get added here, one at a time, as their data is ready.
 """
 
 from azure.ai.projects.models import FunctionTool
+
+import classify
 
 WRITTEN_ON = "2026-11-07"  # the date describe_data's text was last checked against the handoff
 
@@ -108,8 +110,11 @@ SOURCES = [
         "known_limits": [
             "On the 35 dev requests, prompt v2 got 34 and then 35 labels right in two runs, "
             "and 35 of 35 parking flags. 35 requests is a small test.",
+            "A model's label, not a person's.",
+            "Tested only on requests that came with the board's explanation; text pasted without "
+            "its request category hasn't been tested.",
         ],
-        "tool_status": "Not built as an agent tool yet; the labeling pipeline itself works.",
+        "tool_status": "Built: labels one request at a time with the pipeline's model and frozen prompt v2.",
     },
 ]
 
@@ -143,6 +148,66 @@ def describe_data() -> dict:
     }
 
 
+CLASSIFIER_PROMPT = "v2"  # frozen Nov 5, 2026; classify.load_prompt refuses an edited copy
+
+
+def classify_request(explanation: str, request_category: str) -> dict:
+    """Label one board request exactly as the labeling pipeline would.
+
+    It reuses classify.py's own functions: same deployment, frozen prompt, settings and
+    cache, and a brake of one model call (none if the text is already cached).
+    """
+    prompt = classify.load_prompt(CLASSIFIER_PROMPT)
+    # The pipeline's input is "Request: <category>\nExplanation: <board's words>".
+    text = classify.model_input(request_category, explanation)
+    conn = classify.open_cache()
+    try:
+        results, stats = classify.classify_texts(classify.make_client(), conn, prompt, [text], max_calls=1)
+    finally:
+        conn.close()
+    print(f"  classifier: {stats['calls']} call, {stats['cache_hits']} cache hit, "
+          f"{stats['input_tokens']} input + {stats['output_tokens']} output tokens, "
+          f"about ${classify.cost(stats):.5f}")
+    result = results[text]
+    return {
+        "source": f"{classify.DEPLOYMENT} (model version {classify.MODEL_VERSION}) with frozen prompt "
+        f"{CLASSIFIER_PROMPT}: the same setup as the labeling pipeline",
+        "as_of": "Prompt v2 frozen Nov 5, 2026",
+        "label": result["label"],
+        "parking_concern": result["parking_concern"],
+        "reason": result["reason"],
+        "from_cache": result["from_cache"],
+        "error": result["error"],
+        "dev_set_check": "On the 35 hand-labeled dev requests: 34 and then 35 labels right in two runs; "
+        "35 of 35 parking flags",
+    }
+
+
+classify_request_tool = FunctionTool(
+    name="classify_request",
+    description="Label one community board budget request the way the labeling pipeline would: "
+    "ev_charging, parking_or_curb, clean_air or other, plus whether it raises parking or curb space "
+    "as a need or a problem (parking_concern), with the model's reason.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "explanation": {
+                "type": "string",
+                "description": "The board's own words, exactly as the user gave them",
+            },
+            "request_category": {
+                "type": "string",
+                "description": "The request's category line from the city's list, if the user gave "
+                "one, such as 'Other transportation infrastructure requests'; otherwise an empty string",
+            },
+        },
+        "required": ["explanation", "request_category"],
+        "additionalProperties": False,
+    },
+    strict=True,
+)
+
+
 describe_data_tool = FunctionTool(
     name="describe_data",
     description="List every data source: what it is, its dataset, its as-of date, its geography, "
@@ -158,5 +223,5 @@ describe_data_tool = FunctionTool(
 )
 
 # What create_agent.py sends to Foundry, and what ask_agent.py runs. Keep the two in step.
-TOOL_DEFINITIONS = [describe_data_tool]
-TOOL_FUNCTIONS = {"describe_data": describe_data}
+TOOL_DEFINITIONS = [describe_data_tool, classify_request_tool]
+TOOL_FUNCTIONS = {"describe_data": describe_data, "classify_request": classify_request}
