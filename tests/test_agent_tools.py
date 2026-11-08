@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 import agent_tools
+import evaluate
 
 
 def test_describe_data_returns_source_and_as_of():
@@ -92,6 +93,27 @@ def test_classify_request_drops_a_period_at_the_end_of_the_category(monkeypatch)
     assert seen["texts"] == [
         "Request: Other capital budget request for DOT\nExplanation: We need EV chargers on our streets."
     ]
+
+
+def test_dev_set_check_agrees_with_the_saved_results():
+    # Fix 24: the numbers the tools report must match what evaluate.py says about the two
+    # prompt v2 dev runs (dev_v2.csv used the cache; dev_v2_nocache.csv is the --no-cache rerun).
+    key = evaluate.read_rows(evaluate.KEY_PATH)
+    first_run = evaluate.evaluate(key, evaluate.read_rows(evaluate.ROOT / "results" / "dev_v2.csv"))
+    rerun = evaluate.evaluate(key, evaluate.read_rows(evaluate.ROOT / "results" / "dev_v2_nocache.csv"))
+    assert first_run[:2] == ["Labels right: 34 of 35 (97%)", "Parking flags right: 35 of 35 (100%)"]
+    assert rerun[:2] == ["Labels right: 35 of 35 (100%)", "Parking flags right: 35 of 35 (100%)"]
+    assert "labels 34 of 35 right in the first run, 35 of 35 in the rerun" in agent_tools.DEV_SET_CHECK
+    assert "parking flags 35 of 35 both times" in agent_tools.DEV_SET_CHECK
+
+
+def test_both_tools_give_the_same_dev_set_check(monkeypatch):
+    use_fake_classifier(monkeypatch)
+    result = agent_tools.classify_request("We need EV chargers on our streets.", "")
+    assert result["dev_set_check"] == agent_tools.DEV_SET_CHECK
+    assert result["pipeline_status"] == agent_tools.PIPELINE_STATUS
+    classifier = next(s for s in agent_tools.SOURCES if s["tool"] == "classify_request")
+    assert classifier["known_limits"][0].startswith(agent_tools.DEV_SET_CHECK)
 
 
 def test_every_tool_definition_has_a_function():

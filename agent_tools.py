@@ -13,10 +13,17 @@ from azure.ai.projects.models import FunctionTool
 
 import classify
 
-WRITTEN_ON = "2026-11-07"  # the date describe_data's text was last checked against the handoff
+WRITTEN_ON = "2026-11-08"  # the date describe_data's text was last checked against the handoff
 
 # Every entry in SOURCES has exactly these fields (tests/test_agent_tools.py checks it).
 SOURCE_FIELDS = {"name", "tool", "what_it_is", "dataset", "as_of", "geography", "known_limits", "tool_status"}
+
+# Fix 24: the classifier's dev-set results, worded one way for both tools. The agent turned
+# "34 and then 35" into "35 of 35"; a test checks these numbers against the files in results/.
+DEV_SET_CHECK = ("Prompt v2 on the 35 hand-labeled dev requests (Nov 5, 2026): labels 34 of 35 right in "
+                 "the first run, 35 of 35 in the rerun; parking flags 35 of 35 both times.")
+PIPELINE_STATUS = ("The labeling pipeline has run only on the 35 dev requests; "
+                   "the full requests file hasn't been labeled yet.")
 
 SOURCES = [
     {
@@ -108,8 +115,7 @@ SOURCES = [
         "as_of": "Prompt v2 frozen Nov 5, 2026",
         "geography": "One request at a time; no geography.",
         "known_limits": [
-            "On the 35 dev requests, prompt v2 got 34 and then 35 labels right in two runs, "
-            "and 35 of 35 parking flags. 35 requests is a small test.",
+            DEV_SET_CHECK + " 35 requests is a small test.",
             "A model's label, not a person's.",
             "Tested only on requests that came with the board's explanation; text pasted without "
             "its request category hasn't been tested.",
@@ -182,8 +188,8 @@ def classify_request(explanation: str, request_category: str) -> dict:
         "reason": result["reason"],
         "from_cache": result["from_cache"],
         "error": result["error"],
-        "dev_set_check": "On the 35 hand-labeled dev requests: 34 and then 35 labels right in two runs; "
-        "35 of 35 parking flags",
+        "dev_set_check": DEV_SET_CHECK,
+        "pipeline_status": PIPELINE_STATUS,
     }
 
 
