@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent
 PROJECT_ENDPOINT = "https://nyc-ev-gap-js.services.ai.azure.com/api/projects/nyc-ev-gap"
 MODEL_DEPLOYMENT = "gpt-5.1"  # the agent's deployment; classify.py stays on gpt-5.4-nano
 AGENT_NAME = "ev-gap-agent"
-INSTRUCTIONS_FILE = ROOT / "prompts" / "agent_v6.md"  # v1-v5 kept unchanged for comparison
+INSTRUCTIONS_FILE = ROOT / "prompts" / "agent_v7.md"  # v1-v6 kept unchanged for comparison
 
 
 def main() -> None:
