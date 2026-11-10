@@ -189,3 +189,22 @@ def test_run_all_stops_cleanly_at_the_limit_and_resumes(tmp_path, conn):
     client = fake_client()
     classify.run_all(max_calls=10, raw_path=path, out_path=out, client=client, conn=conn)
     assert len(client.responses.calls) == 1 and len(read_output(out)) == 3
+
+
+# ---------- fix 27: one rule for a period at the end of the category ----------
+
+def test_model_input_drops_a_period_at_the_end_of_the_category():
+    # 299 distinct register texts have one, e.g. "Personnel for sewer inspections, etc."
+    assert classify.model_input("Personnel for sewer inspections, etc.", "Inspect  sewers.") == \
+        "Request: Personnel for sewer inspections, etc\nExplanation: Inspect sewers."
+    # The board's own words keep their period; a category without one is unchanged.
+    assert classify.model_input("Reconstruct streets", "Repave it.") == \
+        "Request: Reconstruct streets\nExplanation: Repave it."
+
+
+def test_no_dev_set_category_ends_in_a_period():
+    # Why fix 27 leaves the dev set's cached labels alone: their input text, and so their key, is unchanged.
+    with open(classify.DEV_PATH, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 35
+    assert not [r["request"] for r in rows if classify.normalize(r["request"]).endswith(".")]

@@ -71,7 +71,15 @@ def normalize(text):
 
 
 def model_input(request, explanation):
-    return f"Request: {normalize(request)}\nExplanation: {normalize(explanation)}"
+    """The text the classifier sees for one request.
+
+    Fix 27: a period at the end of the category is dropped here, so the full run and the
+    agent's classify_request (fix 23) send the same text and share one cache entry.
+    299 distinct register texts have such a category; none of the 35 dev-set requests does,
+    so the dev set's cached labels keep their keys.
+    """
+    category = normalize(request).removesuffix(".").rstrip()
+    return f"Request: {category}\nExplanation: {normalize(explanation)}"
 
 
 def sha256(text):
