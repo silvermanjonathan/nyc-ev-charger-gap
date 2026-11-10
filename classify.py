@@ -8,6 +8,7 @@ Usage (repo folder, venv active):
     python classify.py dev                   # label the 35 dev-set requests with the newest prompt
     python classify.py dev --no-cache        # ask the model again even if cached (stability check)
     python classify.py dev --prompt v1       # use an older prompt from prompts/classify_v1.md
+    python classify.py all --max-calls 50    # label the full register, stopping after 50 new model calls
 """
 import argparse
 import csv
@@ -15,6 +16,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -30,6 +32,8 @@ FROZEN_PROMPTS = {"v2": "8fd196398a8202ae69bf49e8812cdd9ebc25f73835d59fcbbd59951
 CACHE_PATH = ROOT / "data" / "label_cache.db"
 DEV_PATH = ROOT / "labels" / "dev_set_labels.csv"
 RESULTS_DIR = ROOT / "results"
+# The full register from NYC Open Data, downloaded Oct 30, 2026 (95,389 rows). data/ is git-ignored.
+RAW_PATH = ROOT / "data" / "Register_of_Community_Board_Budget_Requests_20261030.csv"
 
 BASE_URL = os.environ.get("AZURE_OPENAI_BASE_URL", "https://nyc-ev-gap-js.openai.azure.com/openai/v1/")
 DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4-nano")
@@ -51,7 +55,14 @@ class Label(BaseModel):
 
 
 class TooManyCalls(Exception):
-    """Raised before a run would exceed its call limit: the code's spending brake."""
+    """Raised before a run would exceed its call limit: the code's spending brake.
+
+    It carries the run's stats so far, so a stopped run can still report its calls and cost.
+    """
+
+    def __init__(self, message, stats=None):
+        super().__init__(message)
+        self.stats = stats
 
 
 def normalize(text):
@@ -138,7 +149,7 @@ def classify_texts(client, conn, prompt, texts, use_cache=True, max_calls=100):
                 stats["cache_hits"] += 1
                 continue
         if stats["calls"] >= max_calls:
-            raise TooManyCalls(f"stopped at {max_calls} calls; raise --max-calls to go further")
+            raise TooManyCalls(f"stopped at {max_calls} calls; raise --max-calls to go further", stats)
         stats["calls"] += 1
         try:
             result, usage = ask_model(client, prompt, text)
@@ -200,14 +211,86 @@ def run_dev(use_cache, max_calls, version=DEFAULT_PROMPT):
     print(f"wrote {out.relative_to(ROOT)}")
 
 
+def read_raw(path=RAW_PATH):
+    """Read the full register. Its headers have stray spaces ("Request ", "Tracking  Code "),
+    so each header is tidied with normalize() before use."""
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        reader.fieldnames = [normalize(name) for name in reader.fieldnames]
+        return list(reader)
+
+
+ALL_COLUMNS = ["publication", "borough", "community_board", "tracking_code",
+               "pred_label", "pred_parking_concern", "reason", "from_cache", "error"]
+
+
+def print_run(stats, seconds):
+    print(f"{stats['distinct']} distinct texts: {stats['calls']} model calls, "
+          f"{stats['cache_hits']} cache hits, {stats['errors']} errors")
+    print(f"tokens: {stats['input_tokens']} in ({stats['cached_input_tokens']} cached), "
+          f"{stats['output_tokens']} out; cost ${cost(stats):.4f}")
+    if stats["calls"]:
+        print(f"time: {seconds / 60:.1f} min, {seconds / stats['calls']:.2f} s per model call")
+
+
+def run_all(max_calls, version=DEFAULT_PROMPT, raw_path=RAW_PATH, out_path=None, client=None, conn=None):
+    """Label every row of the full register. Each distinct text costs one call; repeats reuse it.
+
+    Writes one output row per register row. Publication plus tracking code identifies a row
+    (checked Nov 10: unique for all 95,389), so the output can be joined back to the register.
+    At the call limit it stops without writing the file. The labels made so far are already in
+    the cache, so a rerun with a higher --max-calls picks up where this one stopped.
+    Returns the run's stats.
+    """
+    prompt = load_prompt(version)
+    rows = read_raw(raw_path)
+    texts = [model_input(r["Request"], r["Explanation"]) for r in rows]
+    if out_path is None:
+        out_path = ROOT / "data" / f"all_{version}.csv"
+    if conn is None:
+        conn = open_cache()
+    if client is None:
+        client = make_client()
+
+    print(f"prompt {version}: {len(rows)} rows")
+    start = time.monotonic()
+    try:
+        results, stats = classify_texts(client, conn, prompt, texts, use_cache=True, max_calls=max_calls)
+    except TooManyCalls as stop:
+        stats = stop.stats
+        print_run(stats, time.monotonic() - start)
+        not_reached = stats["distinct"] - stats["cache_hits"] - stats["calls"]
+        print(f"stopped at --max-calls {max_calls} with {not_reached} distinct texts not reached yet. "
+              "No results file written; the labels so far are in the cache.")
+        return stats
+
+    print_run(stats, time.monotonic() - start)
+    if stats["errors"]:
+        print(f"{stats['errors']} texts got no label (see the error column); a rerun tries them again.")
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(ALL_COLUMNS)
+        for r, text in zip(rows, texts):
+            p = results[text]
+            writer.writerow([r["Publication"], r["Borough"], r["Community Board"], r["Tracking Code"],
+                             p["label"], p["parking_concern"], p["reason"], p["from_cache"], p["error"]])
+    print(f"wrote {out_path}")
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("target", choices=["dev"], help="which requests to label")
+    parser.add_argument("target", choices=["dev", "all"], help="which requests to label")
     parser.add_argument("--no-cache", action="store_true", help="ask the model even if a label is cached")
     parser.add_argument("--max-calls", type=int, default=100, help="stop before making more calls than this")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="prompt version, e.g. v1 or v2")
     args = parser.parse_args()
-    run_dev(use_cache=not args.no_cache, max_calls=args.max_calls, version=args.prompt)
+    if args.target == "all":
+        if args.no_cache:
+            parser.error("--no-cache is for the dev-set stability check only")
+        run_all(max_calls=args.max_calls, version=args.prompt)
+    else:
+        run_dev(use_cache=not args.no_cache, max_calls=args.max_calls, version=args.prompt)
 
 
 if __name__ == "__main__":

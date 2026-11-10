@@ -2,6 +2,7 @@
 
 Run from the repo folder:  python -m pytest -q
 """
+import csv
 import types
 
 import httpx2
@@ -137,3 +138,54 @@ def test_edited_frozen_prompt_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(classify, "PROMPTS_DIR", tmp_path)
     with pytest.raises(SystemExit):
         classify.load_prompt("v2")
+
+
+# ---------- the `all` target: the full register ----------
+
+def write_register(path, rows):
+    """A tiny register with the real file's header names, stray spaces included."""
+    header = ["Publication", "Borough", "Community Board", "Tracking  Code ", "Request ", "Explanation "]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def read_output(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def test_read_raw_tidies_the_header_names(tmp_path):
+    path = tmp_path / "register.csv"
+    write_register(path, [["20270217", "Bronx", "07", "207202701C", "Install chargers", "At the library"]])
+    row = classify.read_raw(path)[0]
+    assert row["Tracking Code"] == "207202701C"
+    assert row["Request"] == "Install chargers" and row["Explanation"] == "At the library"
+
+
+def test_run_all_labels_each_text_once_and_writes_every_row(tmp_path, conn):
+    path, out = tmp_path / "register.csv", tmp_path / "all.csv"
+    write_register(path, [
+        ["20260630", "Bronx", "07", "A1", "Install chargers", "At the library"],
+        ["20270217", "Bronx", "07", "A1", "Install chargers", "At the  library"],  # same text, next cycle
+        ["20270217", "Queens", "01", "B2", "Fix potholes", "Main St"],
+    ])
+    client = fake_client()
+    stats = classify.run_all(max_calls=10, raw_path=path, out_path=out, client=client, conn=conn)
+    assert len(client.responses.calls) == 2 and stats["distinct"] == 2
+    written = read_output(out)
+    assert [r["publication"] for r in written] == ["20260630", "20270217", "20270217"]
+    assert [r["tracking_code"] for r in written] == ["A1", "A1", "B2"]
+    assert all(r["pred_label"] == "ev_charging" for r in written)
+
+
+def test_run_all_stops_cleanly_at_the_limit_and_resumes(tmp_path, conn):
+    path, out = tmp_path / "register.csv", tmp_path / "all.csv"
+    write_register(path, [["20270217", "Bronx", "07", f"C{n}", "Install chargers", f"Site {n}"] for n in range(3)])
+    stats = classify.run_all(max_calls=2, raw_path=path, out_path=out, client=fake_client(), conn=conn)
+    assert stats["calls"] == 2 and not out.exists()
+    assert conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0] == 2
+    client = fake_client()
+    classify.run_all(max_calls=10, raw_path=path, out_path=out, client=client, conn=conn)
+    assert len(client.responses.calls) == 1 and len(read_output(out)) == 3
